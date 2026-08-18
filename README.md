@@ -65,12 +65,7 @@ python Testset_eval.py --model_arch site_dia \
   --result_dir outputs/site_dia_eval
 ```
 
-## Repository scope
 
-This is a clean source-and-checkpoint release. Manuscript-specific plotting
-scripts are maintained separately in the paper workspace rather than in this
-repository. Please cite the accompanying manuscript when using the code or
-released checkpoints.
 
 ## License
 
