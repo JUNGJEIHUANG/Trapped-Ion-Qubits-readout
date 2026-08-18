@@ -1,0 +1,17 @@
+﻿[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "300ions-cnndetect"
+version = "0.1.0"
+description = "Training and evaluation code for 300-ion fluorescence image readout models."
+readme = "README.md"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+py-modules = ["config", "dataset", "loss", "trainer", "train_main", "Testset_eval", "Ablation_eval", "convert_slice_data_to_png", "generate_mask_proposals", "train_retrained_ablation"]
+packages = ["nets", "Pre_train"]
+
+[tool.ruff]
+line-length = 100
