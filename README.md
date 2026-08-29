@@ -1,71 +1,99 @@
-# Site-AIT: 300-Ion Fluorescence Readout
+# Site-AIT: physics-informed 300-ion fluorescence readout
 
-This repository contains the functional training, evaluation, and released
-checkpoint code for Site-Adaptive Ion Tokenization (Site-AIT), a
-physics-informed model for joint bright/dark-state inference from fluorescence
-images of a calibrated 300-ion array. The implementation combines
-offset-corrected Top-16 site tokenization, lattice-aware cross-site attention,
-and a differentiable PSF reconstruction loss.
+This repository is the code-and-checkpoint release for Site-Adaptive Ion
+Tokenization (Site-AIT). One latent token is bound to each calibrated ion site;
+offset-corrected adaptive Top-16 sampling gathers local evidence, cross-site
+self-attention models register-wide crosstalk, and a differentiable measured-PSF
+objective constrains training without changing the inference graph.
 
-## Included
+## Release contents
 
-- Supervised training and evaluation: `train_main.py`, `Testset_eval.py`,
-  `Ablation_eval.py`, `Robustness_eval.py`, and
-  `train_retrained_ablation.py`.
-- Model, data, loss, PSF, and perturbation modules: `nets/`, `dataset.py`,
-  `loss.py`, `trainer.py`, `psf_kernels.py`, and `perturbations.py`.
-- Self-supervised pretraining implementation: `Pre_train/`.
-- Classical Burrell baseline: `Burrell/`.
-- CPU-only smoke tests: `smoke_tests/run_all.py`.
-- Released weights:
-  - `Pretrain_weight/best.pth` (self-supervised pretraining checkpoint);
-  - `Site_AIT_weight/seed_{1,2,3}/best.pth` (three Site-AIT checkpoints).
+- Site-AIT training/evaluation: `train_main.py`, `Testset_eval.py`,
+  `Ablation_eval.py`, `Robustness_eval.py`, `train_retrained_ablation.py`.
+- Model and physics modules: `nets/`, `loss.py`, `psf_kernels.py`,
+  `perturbations.py`.
+- Detector-aware self-supervised pretraining: `Pre_train/`.
+- Released checkpoints: `Pretrain_weight/best.pth` and
+  `Site_AIT_weight/seed_{1,2,3}/best.pth`.
+- Current-paper baselines: matched filter and IPM in
+  `Reproduce_baseline_code/`; DETR-style Query, U-Net,
+  TransUNet-style, SETR-style, and Segmenter in `nets/`; and the
+  validation-only dense-baseline search protocol in `experiments/`.
 
-Datasets, raw annotations, generated outputs, and locally trained checkpoints
-are deliberately not included. Their expected layout and all reproducible
-commands are documented in `REPRODUCIBILITY.md`.
+The benchmark additionally uses the authors' public D-FINE/DEIM and SegMAN
+implementations. They are not vendored here; the adaptation boundary and
+command interface are documented in `experiments/README.md`.
 
-## Installation
+## Installation and no-data verification
 
-Use Python 3.10 or later. Install the appropriate PyTorch build for your CUDA
-environment first, then install the remaining dependencies:
+Use Python 3.10 or later and install the CUDA-compatible PyTorch build first:
 
 ```bash
 pip install torch torchvision
 pip install -r requirements.txt
-```
-
-Run the no-data smoke tests before a full experiment:
-
-```bash
 python smoke_tests/run_all.py
+python -m pytest experiments/tests Reproduce_baseline_code/tests -q
 ```
 
-## Quick start
+These checks do not reproduce manuscript metrics without the experimental
+dataset and GPU training runs.
 
-Set `IMG_DIR` and `SITE_DIA_LABEL_DIR` to the supervised dataset locations, then
-train or evaluate from the repository root. For example:
+## Main model quick start
 
 ```bash
 python train_main.py --model_arch site_dia \
   --pretrained_ckpt Pretrain_weight/best.pth --load_mode backbone \
-  --site_dia_label_dir /path/to/intersection_train_data/site_dia_labels \
+  --site_dia_label_dir data/intersection_train_data/site_dia_labels \
   --sample_sizes 50000 --epochs 100 --batch_size 48 \
-  --output_dir outputs/site_dia_main
+  --random_state 1 --output_dir outputs/site_ait_seed1
 ```
-
-For evaluation, use any released Site-AIT checkpoint, for example
-`Site_AIT_weight/seed_1/best.pth`:
 
 ```bash
 python Testset_eval.py --model_arch site_dia \
   --model_path Site_AIT_weight/seed_1/best.pth \
-  --test_root /path/to/intersection_test_data \
-  --gt_all_bright_mask /path/to/GroundTruth.png \
-  --result_dir outputs/site_dia_eval
+  --test_root data/intersection_test_data \
+  --gt_all_bright_mask data/GroundTruth.png \
+  --result_dir outputs/site_ait_eval_seed1
 ```
 
+## Dense-baseline protocol
 
+Generate the complete 96-run plan without launching jobs:
+
+```bash
+python -m experiments.run_dense_protocol --output-root outputs/dense_protocol
+```
+
+Execute it only after supplying the training corpus, calibrated all-bright
+mask, and a command template for the official SegMAN-T checkout:
+
+```bash
+python -m experiments.run_dense_protocol --execute \
+  --data-root data/intersection_train_data \
+  --calibration-mask data/GroundTruth.png \
+  --segman-command "python external/segman_adapter.py --output {output_dir} --seed {seed} --lr {lr} --objective {objective} --stride {output_stride} --pretrained {imagenet_pretrained}"
+```
+
+The runner is resumable. Search sees only the fixed 40,000/10,000
+train/validation split; `Real1600-Aug400` is not accepted by the search runner.
+
+The detection search is separately enumerated and resumable:
+
+```bash
+python -m experiments.run_detection_protocol
+```
+
+Its dry plan contains 216 DETR-style Query candidates, 216 D-FINE + MAL
+candidates, and the 12-candidate Site-AIT control grid. Execution requires an
+explicit adapter command for the official DEIM checkout.
+
+## Data boundary
+
+The raw sCMOS frames, calibrated nominal lattice, and site-level annotations
+are not distributed here. Their expected layout is in `REPRODUCIBILITY.md`;
+access is described in the manuscript. Released weights support inspection and
+evaluation, but numerical reproduction of training-dependent tables requires
+the data.
 
 ## License
 

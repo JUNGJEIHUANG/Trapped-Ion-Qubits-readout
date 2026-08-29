@@ -1,6 +1,15 @@
 import pandas as pd
 
+import numpy as np
+
 import torch
+
+from experiments.dense_decoder import (
+    RADII,
+    disk_average_probabilities,
+    select_decoder_from_scores,
+    states_from_masks,
+)
 
 
 class Trainer:
@@ -25,6 +34,10 @@ class Trainer:
 
         recon_schedule=None,
 
+        early_stopping_metric="val_loss",
+
+        dense_site_xy=None,
+
     ):
 
         self.data_loaders = data_loaders
@@ -47,12 +60,18 @@ class Trainer:
 
         self.recon_schedule = recon_schedule
 
+        self.early_stopping_metric = early_stopping_metric
+
+        self.dense_site_xy = None if dense_site_xy is None else np.asarray(dense_site_xy)
+
 
     def train(self, model, optimizer, num_epochs):
 
         self.history = []
 
-        best_val_loss = float("inf")
+        maximize = self.early_stopping_metric == "val_ion_acc"
+
+        best_metric = float("-inf") if maximize else float("inf")
 
         no_improve = 0
 
@@ -118,6 +137,12 @@ class Trainer:
 
                 "val_ion_acc": val_stats.get("ion_acc", 0.0),
 
+                "decoder_radius": val_stats.get("decoder_radius", float("nan")),
+
+                "decoder_threshold": val_stats.get("decoder_threshold", float("nan")),
+
+                "decoder_youden_j": val_stats.get("decoder_youden_j", float("nan")),
+
                 "current_lr": round(optimizer.param_groups[0]["lr"], 8),
 
             }
@@ -132,9 +157,21 @@ class Trainer:
 
             if self.early_stopping_patience is not None:
 
-                if val_stats["loss"] < best_val_loss - 1e-4:
+                current = (
+                    val_stats.get("ion_acc", float("-inf"))
+                    if maximize
+                    else val_stats["loss"]
+                )
 
-                    best_val_loss = val_stats["loss"]
+                improved = (
+                    current > best_metric + 1e-6
+                    if maximize
+                    else current < best_metric - 1e-4
+                )
+
+                if improved:
+
+                    best_metric = current
 
                     no_improve = 0
 
@@ -144,7 +181,10 @@ class Trainer:
 
                 if no_improve >= self.early_stopping_patience:
 
-                    print(f"Early stopping at epoch {epoch} (no improvement for {no_improve} epochs)")
+                    print(
+                        f"Early stopping at epoch {epoch} on {self.early_stopping_metric} "
+                        f"(no improvement for {no_improve} epochs)"
+                    )
 
                     break
 
@@ -190,7 +230,7 @@ class Trainer:
 
             loss_dict = self.criterion(outputs, labels, centers_gt, centers_valid)
 
-        return inputs, loss_dict
+        return inputs, loss_dict, outputs
 
 
     def _accumulate(self, running, loss_dict, batch_size):
@@ -232,7 +272,7 @@ class Trainer:
 
                 with torch.autocast(device_type=self.device.type, enabled=self.use_amp):
 
-                    inputs, loss_dict = self._forward_and_loss(model, batch, epoch)
+                    inputs, loss_dict, _ = self._forward_and_loss(model, batch, epoch)
 
                     loss = loss_dict["loss"]
 
@@ -257,6 +297,10 @@ class Trainer:
 
         running = {}
 
+        scores_by_radius = {radius: [] for radius in RADII}
+
+        state_labels = []
+
 
         for batch in data_loader:
 
@@ -264,10 +308,57 @@ class Trainer:
 
                 with torch.autocast(device_type=self.device.type, enabled=self.use_amp):
 
-                    inputs, loss_dict = self._forward_and_loss(model, batch, epoch)
+                    inputs, loss_dict, outputs = self._forward_and_loss(model, batch, epoch)
+
+                    if self.dense_site_xy is not None:
+
+                        if not torch.is_tensor(outputs):
+
+                            raise TypeError("dense decoder validation requires tensor mask logits")
+
+                        maps = torch.sigmoid(outputs).detach().cpu().numpy()
+
+                        masks = batch["mask"].detach().cpu().numpy()
+
+                        for radius in RADII:
+
+                            scores_by_radius[radius].append(
+
+                                disk_average_probabilities(maps, self.dense_site_xy, radius)
+
+                            )
+
+                        state_labels.append(states_from_masks(masks, self.dense_site_xy))
 
             self._accumulate(running, loss_dict, inputs.size(0))
 
 
-        return self._finalize(running, len(data_loader.dataset))
+        stats = self._finalize(running, len(data_loader.dataset))
 
+        if state_labels:
+
+            labels = np.concatenate(state_labels, axis=0)
+
+            scores = {
+
+                radius: np.concatenate(chunks, axis=0)
+
+                for radius, chunks in scores_by_radius.items()
+
+            }
+
+            selected = select_decoder_from_scores(scores, labels)
+
+            stats.update(
+
+                ion_acc=selected.accuracy,
+
+                decoder_radius=selected.radius,
+
+                decoder_threshold=selected.threshold,
+
+                decoder_youden_j=selected.youden_j,
+
+            )
+
+        return stats

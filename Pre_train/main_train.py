@@ -25,9 +25,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-from dataset import IonUnlabeledDataset
+from Pre_train.dataset import IonUnlabeledDataset
 
-from model_denoise import DWNetV2DenoiseUNet
+from Pre_train.model_denoise import DWNetV2DenoiseUNet
 
 from ssim_utils import ssim_loss
 
@@ -43,7 +43,7 @@ SAVE_DIR = os.environ.get(
 
 EPOCHS = 100
 
-BATCH_SIZE = 16
+BATCH_SIZE = 48
 
 LR = 1e-3
 
@@ -59,16 +59,99 @@ L1_WEIGHT = 0.8
 SSIM_WEIGHT = 0.2
 
 
-BLUR_PROB = 0.3
+BLUR_KERNEL_SIZE = (3, 3)
 
-MASK_PROB = 0.3
+BLUR_SIGMA = 0.8
 
-MAX_MASK_FRACTION = 0.12
+MASK_GRAY_LEVELS = 7
+
+MASK_AREA_FRACTION = 0.30
+
+MIN_MASK_SIDE_FRACTION = 0.03
+
+MAX_MASK_SIDE_FRACTION = 0.12
 
 
 DEVICE = "cuda"
 
 print(f"Using device: {DEVICE}")
+
+
+def _apply_random_block_mask(image):
+
+    _, height, width = image.shape
+
+    target_pixels = round(height * width * MASK_AREA_FRACTION)
+
+    masked = torch.zeros((height, width), dtype=torch.bool, device=image.device)
+
+    gray_levels = torch.linspace(
+
+        0.0, 1.0, steps=MASK_GRAY_LEVELS, device=image.device, dtype=image.dtype
+
+    )
+
+    gray_level_order = list(range(MASK_GRAY_LEVELS))
+
+    random.shuffle(gray_level_order)
+
+    block_index = 0
+
+    masked_pixels = 0
+
+    while masked_pixels < target_pixels:
+
+        mask_h = random.randint(
+
+            max(1, round(height * MIN_MASK_SIDE_FRACTION)),
+
+            max(1, round(height * MAX_MASK_SIDE_FRACTION)),
+
+        )
+
+        mask_w = random.randint(
+
+            max(1, round(width * MIN_MASK_SIDE_FRACTION)),
+
+            max(1, round(width * MAX_MASK_SIDE_FRACTION)),
+
+        )
+
+        top = random.randint(0, height - mask_h)
+
+        left = random.randint(0, width - mask_w)
+
+        region_mask = masked[top : top + mask_h, left : left + mask_w]
+
+        available = torch.nonzero(~region_mask, as_tuple=False)
+
+        if available.numel() == 0:
+
+            continue
+
+        remaining = target_pixels - masked_pixels
+
+        if available.size(0) > remaining:
+
+            available = available[:remaining]
+
+        rows = top + available[:, 0]
+
+        cols = left + available[:, 1]
+
+        if block_index > 0 and block_index % MASK_GRAY_LEVELS == 0:
+
+            random.shuffle(gray_level_order)
+
+        gray_level = gray_levels[gray_level_order[block_index % MASK_GRAY_LEVELS]]
+
+        image[:, rows, cols] = gray_level
+
+        masked[rows, cols] = True
+
+        masked_pixels += available.size(0)
+
+        block_index += 1
 
 
 def add_noise(x):
@@ -96,9 +179,7 @@ def add_noise(x):
 
         img = noisy_np[idx, 0]
 
-        if random.random() < BLUR_PROB:
-
-            img = cv2.GaussianBlur(img, (3, 3), sigmaX=0.8)
+        img = cv2.GaussianBlur(img, BLUR_KERNEL_SIZE, sigmaX=BLUR_SIGMA)
 
         blurred.append(img[None, ...])
 
@@ -109,29 +190,11 @@ def add_noise(x):
     )
 
 
-    batch_size, _, height, width = noisy.shape
+    batch_size = noisy.size(0)
 
     for idx in range(batch_size):
 
-        if random.random() < MASK_PROB:
-
-            mask_h = random.randint(
-
-                max(1, int(height * 0.03)), max(1, int(height * MAX_MASK_FRACTION))
-
-            )
-
-            mask_w = random.randint(
-
-                max(1, int(width * 0.03)), max(1, int(width * MAX_MASK_FRACTION))
-
-            )
-
-            top = random.randint(0, max(0, height - mask_h))
-
-            left = random.randint(0, max(0, width - mask_w))
-
-            noisy[idx, :, top : top + mask_h, left : left + mask_w] = 0.0
+        _apply_random_block_mask(noisy[idx])
 
 
     noisy = torch.clamp(noisy, 0.0, 1.0)
@@ -321,4 +384,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
-

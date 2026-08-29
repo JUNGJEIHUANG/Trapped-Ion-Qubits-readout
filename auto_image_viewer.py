@@ -179,7 +179,7 @@ def collect_files(folder: Path, recursive: bool) -> list[Path]:
 
 def main():
     parser = argparse.ArgumentParser(description="Automatically display image and npy files in a folder.")
-    parser.add_argument("--folder", type=Path, default=Path(r"D:\Desktop\20260305_1727"))
+    parser.add_argument("--folder", type=Path, default=Path("."))
     parser.add_argument("--file", type=Path, default=None, help="Display one specific file, such as a .npy file.")
     parser.add_argument("--interval", type=float, default=0.2, help="Seconds between frames/images.")
     parser.add_argument("--no-recursive", action="store_true")

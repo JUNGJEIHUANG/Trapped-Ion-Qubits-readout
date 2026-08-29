@@ -111,6 +111,45 @@ def _pup_decoder(embed_dim, out_channels):
     )
 
 
+class MLADecoder(nn.Module):
+    """Multi-level aggregation decoder using four encoder depths."""
+
+    def __init__(self, embed_dim, out_channels):
+
+        super().__init__()
+
+        branch_dim = max(embed_dim // 4, 16)
+
+        self.branches = nn.ModuleList(
+
+            [
+
+                nn.Sequential(
+
+                    nn.Conv2d(embed_dim, branch_dim, 1),
+
+                    nn.ReLU(inplace=True),
+
+                    nn.Conv2d(branch_dim, branch_dim, 3, padding=1),
+
+                    nn.ReLU(inplace=True),
+
+                )
+
+                for _ in range(4)
+
+            ]
+
+        )
+
+        self.out = nn.Conv2d(4 * branch_dim, out_channels, 1)
+
+
+    def forward(self, features):
+
+        return self.out(torch.cat([branch(x) for branch, x in zip(self.branches, features)], dim=1))
+
+
 class SETR(nn.Module):
 
     def __init__(
@@ -161,9 +200,17 @@ class SETR(nn.Module):
 
             self.decoder = _pup_decoder(embed_dim, out_channels)
 
-        else:
+        elif decoder == "mla":
+
+            self.decoder = MLADecoder(embed_dim, out_channels)
+
+        elif decoder == "naive":
 
             self.decoder = nn.Conv2d(embed_dim, out_channels, 1)
+
+        else:
+
+            raise ValueError("decoder must be one of: pup, naive, mla")
 
 
         self._pos_cache: dict = {}
@@ -189,9 +236,17 @@ class SETR(nn.Module):
         tokens = tokens + self._pos(h, w, x.device)
 
 
-        for blk in self.blocks:
+        intermediate = []
+
+        capture = {max(0, round((len(self.blocks) - 1) * q / 3)) for q in range(4)}
+
+        for index, blk in enumerate(self.blocks):
 
             tokens = blk(tokens)
+
+            if index in capture:
+
+                intermediate.append(tokens)
 
         tokens = self.norm(tokens)
 
@@ -203,6 +258,22 @@ class SETR(nn.Module):
 
             out = self.decoder(feat)
 
+        elif self.decoder_type == "mla":
+
+            while len(intermediate) < 4:
+
+                intermediate.append(tokens)
+
+            features = [
+
+                item.transpose(1, 2).reshape(B, self.embed_dim, h, w)
+
+                for item in intermediate[:4]
+
+            ]
+
+            out = self.decoder(features)
+
         else:
 
             out = self.decoder(feat)
@@ -213,4 +284,3 @@ class SETR(nn.Module):
             out = F.interpolate(out, size=(H, W), mode="bilinear", align_corners=False)
 
         return out
-

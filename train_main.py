@@ -1,5 +1,7 @@
 import argparse
 
+import json
+
 import logging
 
 import os
@@ -21,7 +23,25 @@ import torch
 
 from sklearn.model_selection import train_test_split
 
-from tensorboardX import SummaryWriter
+try:
+
+    from tensorboardX import SummaryWriter
+
+except ImportError:
+
+    class SummaryWriter:  # TensorBoard logging is optional for numerical runs.
+
+        def __init__(self, *args, **kwargs):
+
+            pass
+
+        def add_scalars(self, *args, **kwargs):
+
+            pass
+
+        def close(self):
+
+            pass
 
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
@@ -221,9 +241,13 @@ def build_logger(log_path):
     return logger
 
 
-def save_best_model(output_dir, model, df_hist):
+def save_best_model(output_dir, model, df_hist, metric="val_loss"):
 
-    if df_hist["val_loss"].tail(1).iloc[0] <= df_hist["val_loss"].min():
+    current = df_hist[metric].tail(1).iloc[0]
+
+    is_best = current >= df_hist[metric].max() if metric == "val_ion_acc" else current <= df_hist[metric].min()
+
+    if is_best:
 
         torch.save(model.state_dict(), output_dir / "best.pth")
 
@@ -250,17 +274,23 @@ def write_on_board(writer, experiment_name, df_hist):
     )
 
 
-def log_hist(logger, df_hist):
+def log_hist(logger, df_hist, metric="val_loss"):
 
     last = df_hist.tail(1)
 
-    best = df_hist.sort_values("val_loss").head(1)
+    best = df_hist.sort_values(metric, ascending=metric != "val_ion_acc").head(1)
 
     summary = pd.concat((last, best)).reset_index(drop=True)
 
     summary["name"] = ["Last", "Best"]
 
-    logger.debug(summary[["name", "epoch", "train_loss", "val_loss", "current_lr"]])
+    fields = ["name", "epoch", "train_loss", "val_loss", "current_lr"]
+
+    if metric == "val_ion_acc":
+
+        fields.extend(["val_ion_acc", "decoder_radius", "decoder_threshold"])
+
+    logger.debug(summary[fields])
 
     logger.debug("")
 
@@ -551,6 +581,80 @@ def estimate_saturation_threshold(image_paths, sample_size=500, seed=RANDOM_STAT
     return compute_saturation_threshold(pixel_arrays)
 
 
+def extract_calibrated_sites(mask_path):
+
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+    if mask is None:
+
+        raise FileNotFoundError(f"Could not read dense calibration mask: {mask_path}")
+
+    _, binary = cv2.threshold(mask, 128, 255, cv2.THRESH_BINARY)
+
+    count, _, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+
+    sites = []
+
+    for component in range(1, count):
+
+        if stats[component, cv2.CC_STAT_AREA] < 2:
+
+            continue
+
+        x, y = centroids[component]
+
+        sites.append((float(x), float(y)))
+
+    sites.sort(key=lambda xy: (xy[1], xy[0]))
+
+    if not sites:
+
+        raise ValueError(f"No calibrated sites found in {mask_path}")
+
+    return np.asarray(sites, dtype=np.float32)
+
+
+def estimate_positive_class_weight(train_files):
+
+    positives = 0
+
+    pixels = 0
+
+    for image_path in train_files:
+
+        image_path = Path(image_path)
+
+        parts = list(image_path.parts)
+
+        try:
+
+            parts[parts.index("images")] = "masks"
+
+        except ValueError as exc:
+
+            raise ValueError(f"Training image path has no images component: {image_path}") from exc
+
+        mask_path = Path(*parts)
+
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+        if mask is None:
+
+            raise FileNotFoundError(f"Could not read training mask: {mask_path}")
+
+        positives += int((mask > 128).sum())
+
+        pixels += int(mask.size)
+
+    negatives = pixels - positives
+
+    if positives == 0:
+
+        raise ValueError("Cannot compute positive-class weight: no foreground pixels")
+
+    return negatives / positives
+
+
 def run_experiments(
 
     pre_trained,
@@ -627,6 +731,32 @@ def run_experiments(
 
     early_stopping_patience=20,
 
+    early_stopping_metric="val_loss",
+
+    learning_rate=INITIAL_LR,
+
+    dense_calibration_mask="",
+
+    auto_pos_weight=False,
+
+    dense_base_channels=32,
+
+    dense_vit_depth=6,
+
+    dense_patch_size=16,
+
+    dense_setr_decoder="pup",
+
+    dense_segmenter_depth=12,
+
+    detr_token_dim=256,
+
+    detr_num_layers=4,
+
+    detr_num_heads=8,
+
+    detr_template_size=13,
+
 ):
 
     site_token_archs = ("site_dia", "detr_query", "set_transformer")
@@ -655,6 +785,28 @@ def run_experiments(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     logger = build_logger(output_dir / "run.log")
+
+    dense_site_xy = None
+
+    if dense_calibration_mask:
+
+        dense_site_xy = extract_calibrated_sites(dense_calibration_mask)
+
+        logger.info(f"Loaded {len(dense_site_xy)} calibrated sites for validation decoding.")
+
+    dense_archs = ("dwunet", "standard_unet", "vit_unet", "setr", "segformer", "segmenter")
+
+    if (
+
+        early_stopping_metric == "val_ion_acc"
+
+        and model_arch in dense_archs
+
+        and dense_site_xy is None
+
+    ):
+
+        raise ValueError("val_ion_acc early stopping requires --dense_calibration_mask")
 
 
     device = torch.device("cuda")
@@ -744,11 +896,11 @@ def run_experiments(
 
         ):
 
-            save_best_model(current_sample_dir, m, df_hist)
+            save_best_model(current_sample_dir, m, df_hist, metric=early_stopping_metric)
 
             write_on_board(writer, current_experiment_name, df_hist)
 
-            log_hist(logger, df_hist)
+            log_hist(logger, df_hist, metric=early_stopping_metric)
 
 
         if model_arch in site_token_archs:
@@ -892,6 +1044,18 @@ def run_experiments(
 
             recon_schedule = None
 
+            positive_class_weight = None
+
+            if auto_pos_weight:
+
+                positive_class_weight = estimate_positive_class_weight(train_files)
+
+                logger.info(
+
+                    f"Training-only positive-class weight: {positive_class_weight:.6f}"
+
+                )
+
             criterion = HybridSegmentationMultiIonLoss(
 
                 bce_weight=bce_weight,
@@ -901,6 +1065,8 @@ def run_experiments(
                 centroid_weight=centroid_weight,
 
                 radius=4,
+
+                positive_class_weight=positive_class_weight,
 
             )
 
@@ -954,7 +1120,23 @@ def run_experiments(
 
         elif model_arch == "detr_query":
 
-            model = DETRStyleQuery(num_ions=300)
+            if detr_template_size % 2 != 1:
+
+                raise ValueError("DETR template size must be odd")
+
+            model = DETRStyleQuery(
+
+                num_ions=300,
+
+                token_dim=detr_token_dim,
+
+                num_heads=detr_num_heads,
+
+                num_layers=detr_num_layers,
+
+                window_radius=(detr_template_size - 1) // 2,
+
+            )
 
         elif model_arch == "set_transformer":
 
@@ -962,7 +1144,7 @@ def run_experiments(
 
         elif model_arch == "standard_unet":
 
-            model = StandardUNet()
+            model = StandardUNet(base_channels=dense_base_channels)
 
             if pretrained_ckpt:
 
@@ -976,7 +1158,13 @@ def run_experiments(
 
         elif model_arch == "vit_unet":
 
-            model = ViTUNet()
+            model = ViTUNet(
+
+                base_channels=dense_base_channels,
+
+                vit_depth=dense_vit_depth,
+
+            )
 
             if pretrained_ckpt:
 
@@ -986,7 +1174,13 @@ def run_experiments(
 
         elif model_arch == "setr":
 
-            model = SETR()
+            model = SETR(
+
+                patch_size=dense_patch_size,
+
+                decoder=dense_setr_decoder,
+
+            )
 
             if pretrained_ckpt:
 
@@ -1006,7 +1200,13 @@ def run_experiments(
 
         elif model_arch == "segmenter":
 
-            model = Segmenter()
+            model = Segmenter(
+
+                patch_size=dense_patch_size,
+
+                encoder_depth=dense_segmenter_depth,
+
+            )
 
             if pretrained_ckpt:
 
@@ -1058,7 +1258,7 @@ def run_experiments(
 
         optimizer = torch.optim.Adam(
 
-            trainable_params, lr=INITIAL_LR, weight_decay=1e-5
+            trainable_params, lr=learning_rate, weight_decay=1e-5
 
         )
 
@@ -1098,6 +1298,10 @@ def run_experiments(
 
             early_stopping_patience=early_stopping_patience,
 
+            early_stopping_metric=early_stopping_metric,
+
+            dense_site_xy=dense_site_xy,
+
         )
 
 
@@ -1116,7 +1320,17 @@ def run_experiments(
         )
 
 
-        best_row = hist.loc[hist["val_loss"].idxmin()]
+        best_index = (
+
+            hist["val_ion_acc"].idxmax()
+
+            if early_stopping_metric == "val_ion_acc"
+
+            else hist["val_loss"].idxmin()
+
+        )
+
+        best_row = hist.loc[best_index]
 
         last_row = hist.iloc[-1]
 
@@ -1142,6 +1356,14 @@ def run_experiments(
 
                     "last_lr": float(last_row["current_lr"]),
 
+                    "best_val_ion_acc": float(best_row["val_ion_acc"]),
+
+                    "decoder_radius": float(best_row["decoder_radius"]),
+
+                    "decoder_threshold": float(best_row["decoder_threshold"]),
+
+                    "decoder_youden_j": float(best_row["decoder_youden_j"]),
+
                 }
 
             ]
@@ -1151,6 +1373,36 @@ def run_experiments(
         summary_df.to_csv(sample_dir / "summary.csv", index=False)
 
         all_summaries.append(summary_df.iloc[0].to_dict())
+
+        if early_stopping_metric == "val_ion_acc":
+
+            candidate_result = {
+
+                "val_ion_acc": float(best_row["val_ion_acc"]),
+
+                "best_epoch": int(best_row["epoch"]),
+
+                "checkpoint": str(sample_dir / "best.pth"),
+
+            }
+
+            if np.isfinite(best_row["decoder_radius"]):
+
+                candidate_result.update(
+
+                    decoder_radius=int(best_row["decoder_radius"]),
+
+                    decoder_threshold=float(best_row["decoder_threshold"]),
+
+                    decoder_youden_j=float(best_row["decoder_youden_j"]),
+
+                )
+
+            (output_dir / "candidate_result.json").write_text(
+
+                json.dumps(candidate_result, indent=2), encoding="utf-8"
+
+            )
 
 
         writer.close()
@@ -1521,6 +1773,62 @@ if __name__ == "__main__":
 
     )
 
+    parser.add_argument(
+
+        "--early_stopping_metric",
+
+        choices=["val_loss", "val_ion_acc"],
+
+        default="val_loss",
+
+        help="Dense search uses validation per-ion accuracy; ordinary runs keep val_loss.",
+
+    )
+
+    parser.add_argument("--learning_rate", type=float, default=INITIAL_LR)
+
+    parser.add_argument(
+
+        "--dense_calibration_mask",
+
+        default="",
+
+        help="All-bright mask defining calibrated sites for nested dense decoder selection.",
+
+    )
+
+    parser.add_argument(
+
+        "--auto_pos_weight",
+
+        action="store_true",
+
+        help="Compute BCE positive-class weight from training masks only.",
+
+    )
+
+    parser.add_argument("--dense_base_channels", type=int, default=32)
+
+    parser.add_argument("--dense_vit_depth", type=int, default=6)
+
+    parser.add_argument("--dense_patch_size", type=int, default=16)
+
+    parser.add_argument(
+
+        "--dense_setr_decoder", choices=["pup", "naive", "mla"], default="pup"
+
+    )
+
+    parser.add_argument("--dense_segmenter_depth", type=int, default=12)
+
+    parser.add_argument("--detr_token_dim", type=int, default=256)
+
+    parser.add_argument("--detr_num_layers", type=int, default=4)
+
+    parser.add_argument("--detr_num_heads", type=int, default=8)
+
+    parser.add_argument("--detr_template_size", type=int, choices=[7, 13, 19], default=13)
+
     args = parser.parse_args()
 
 
@@ -1631,5 +1939,30 @@ if __name__ == "__main__":
 
         early_stopping_patience=args.early_stopping_patience,
 
-    )
+        early_stopping_metric=args.early_stopping_metric,
 
+        learning_rate=args.learning_rate,
+
+        dense_calibration_mask=args.dense_calibration_mask,
+
+        auto_pos_weight=args.auto_pos_weight,
+
+        dense_base_channels=args.dense_base_channels,
+
+        dense_vit_depth=args.dense_vit_depth,
+
+        dense_patch_size=args.dense_patch_size,
+
+        dense_setr_decoder=args.dense_setr_decoder,
+
+        dense_segmenter_depth=args.dense_segmenter_depth,
+
+        detr_token_dim=args.detr_token_dim,
+
+        detr_num_layers=args.detr_num_layers,
+
+        detr_num_heads=args.detr_num_heads,
+
+        detr_template_size=args.detr_template_size,
+
+    )

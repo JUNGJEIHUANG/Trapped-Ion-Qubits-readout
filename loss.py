@@ -1,5 +1,3 @@
-import math
-
 import torch
 
 import torch.nn as nn
@@ -133,7 +131,14 @@ def multi_ion_centroid_loss(pred, centers_gt, centers_valid, radius=4):
 class HybridSegmentationMultiIonLoss(nn.Module):
 
 
-    def __init__(self, bce_weight=1.0, dice_weight=1.0, centroid_weight=0.1, radius=4):
+    def __init__(
+        self,
+        bce_weight=1.0,
+        dice_weight=1.0,
+        centroid_weight=0.1,
+        radius=4,
+        positive_class_weight=None,
+    ):
 
         super().__init__()
 
@@ -145,7 +150,12 @@ class HybridSegmentationMultiIonLoss(nn.Module):
 
         self.radius = radius
 
-        self.bce = nn.BCEWithLogitsLoss()
+        if positive_class_weight is None:
+            self.register_buffer("positive_class_weight", None)
+        else:
+            self.register_buffer(
+                "positive_class_weight", torch.tensor(float(positive_class_weight))
+            )
 
 
     def forward(self, logits, target, centers_gt, centers_valid):
@@ -153,7 +163,9 @@ class HybridSegmentationMultiIonLoss(nn.Module):
         pred = torch.sigmoid(logits)
 
 
-        loss_bce = self.bce(logits, target)
+        loss_bce = F.binary_cross_entropy_with_logits(
+            logits, target, pos_weight=self.positive_class_weight
+        )
 
         loss_dice = dice_loss(pred, target)
 
@@ -768,4 +780,3 @@ class SiteDIAMultitaskLoss(nn.Module):
             "loss_centroid": loss_coord.detach(),
 
         }
-

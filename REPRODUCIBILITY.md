@@ -18,7 +18,7 @@ If your PyTorch build requires a specific CUDA wheel, install `torch` and `torch
 By default, `config.py` looks for the training dataset at:
 
 ```text
-./data/intersection_train_data
+data/intersection_train_data
 ```
 
 The expected supervised training layout is:
@@ -40,15 +40,15 @@ intersection_train_data/
 You can override the dataset location with environment variables:
 
 ```bash
-export IMG_DIR=/path/to/intersection_train_data
-export SITE_DIA_LABEL_DIR=/path/to/intersection_train_data/site_dia_labels
+export IMG_DIR=data/intersection_train_data
+export SITE_DIA_LABEL_DIR=data/intersection_train_data/site_dia_labels
 ```
 
 On PowerShell:
 
 ```powershell
-$env:IMG_DIR="C:\path\to\intersection_train_data"
-$env:SITE_DIA_LABEL_DIR="C:\path\to\intersection_train_data\site_dia_labels"
+$env:IMG_DIR="data\intersection_train_data"
+$env:SITE_DIA_LABEL_DIR="data\intersection_train_data\site_dia_labels"
 ```
 
 ## 3. Optional self-supervised pretraining
@@ -56,7 +56,7 @@ $env:SITE_DIA_LABEL_DIR="C:\path\to\intersection_train_data\site_dia_labels"
 To create a pretraining checkpoint, run:
 
 ```bash
-python Pre_train/main_train.py --data_dir /path/to/unlabeled/images --save_dir Pre_train/Run_pretrain
+python Pre_train/main_train.py --data_dir data/unlabeled/images --save_dir Pre_train/Run_pretrain
 ```
 
 After pretraining, pass the checkpoint path to supervised training with `--pretrained_ckpt`.
@@ -70,7 +70,7 @@ python train_main.py \
   --model_arch site_dia \
   --pretrained_ckpt Pre_train/Run_pretrain/best.pth \
   --load_mode backbone \
-  --site_dia_label_dir /path/to/intersection_train_data/site_dia_labels \
+  --site_dia_label_dir data/intersection_train_data/site_dia_labels \
   --sample_sizes 50000 \
   --epochs 100 \
   --batch_size 48 \
@@ -83,7 +83,7 @@ To train without a pretrained checkpoint:
 python train_main.py \
   --model_arch site_dia \
   --from_scratch \
-  --site_dia_label_dir /path/to/intersection_train_data/site_dia_labels \
+  --site_dia_label_dir data/intersection_train_data/site_dia_labels \
   --sample_sizes 50000 \
   --epochs 100 \
   --batch_size 48 \
@@ -129,12 +129,12 @@ Evaluate a trained checkpoint on a test set:
 python Testset_eval.py \
   --model_arch site_dia \
   --model_path outputs/site_dia_main/sample_50000/best.pth \
-  --test_root /path/to/intersection_test_data \
-  --gt_all_bright_mask /path/to/GroundTruth.png \
+  --test_root data/intersection_test_data \
+  --gt_all_bright_mask data/GroundTruth.png \
   --result_dir outputs/site_dia_eval
 ```
 
-`--model_arch` also accepts `detr_query` and `set_transformer` for the two coordinate-aware baselines (Section 8).
+`--model_arch detr_query` evaluates the current DETR-style Query baseline. `set_transformer` remains available only for legacy experiments and is not a current-table row (Section 8).
 
 ## 6. Ablation training and evaluation (Table VI)
 
@@ -148,7 +148,7 @@ Train every variant as a separate checkpoint:
 ```bash
 python train_retrained_ablation.py \
   --pretrained_ckpt Pre_train/Run_pretrain/best.pth \
-  --site_dia_label_dir /path/to/intersection_train_data/site_dia_labels \
+  --site_dia_label_dir data/intersection_train_data/site_dia_labels \
   --sample_size 50000 \
   --epochs 100 \
   --batch_size 48 \
@@ -171,8 +171,8 @@ python Ablation_eval.py \
   --no_recon_loss_ckpt outputs/retrained_ablation/no_recon_loss/sample_50000/best.pth \
   --recon_sigma_frozen_ckpt outputs/retrained_ablation/recon_sigma_frozen/sample_50000/best.pth \
   --recon_no_warmup_ckpt outputs/retrained_ablation/recon_no_warmup/sample_50000/best.pth \
-  --test_root /path/to/intersection_test_data \
-  --gt_all_bright_mask /path/to/GroundTruth.png \
+  --test_root data/intersection_test_data \
+  --gt_all_bright_mask data/GroundTruth.png \
   --result_dir outputs/ablation_eval
 ```
 
@@ -193,37 +193,121 @@ Then run the shape/gradient-flow smoke tests (no GPU or dataset required):
 python smoke_tests/run_all.py
 ```
 
-These smoke tests verify that every paper-aligned code path (tokenizer, reconstruction loss, baselines, perturbation operators) runs and differentiates correctly on random tensors. They do **not** verify that training reproduces the paper's reported numbers — that requires the real dataset and a full training run.
+These smoke tests verify the Site-AIT tensor paths, reconstruction loss, selected in-repository baselines, and perturbation operators on random tensors. The separate experiment tests verify dense-protocol accounting and validation decoding. They do **not** verify that training reproduces the paper's reported numbers — that requires the real dataset and a full training run.
 
-## 8. Coordinate-aware baselines (App. F)
+## 8. Current-paper baselines (App. F)
 
-`DETRStyleQuery` (`nets/DETRQuery.py`) and `SetTransformerReadout` (`nets/SetTransformer.py`) share the same DW-UNet backbone as Site-AIT (via `nets/dwunet_backbone.py`) and support the same `--pretrained_ckpt`/`--load_mode` pretraining flow:
+The released benchmark groups comparators as classical estimators,
+query-based detection baselines, and dense-segmentation baselines. The old Set
+Transformer experiment remains in `nets/SetTransformer.py` only as a legacy
+ablation; it is not a row in the current manuscript and must not be substituted
+for any current result.
+
+### 8.1 Matched filter
+
+The MF-array implementation is in
+`Reproduce_baseline_code/matched_filter/mf_model.py`. It uses training-only
+centering/range normalization, Gaussian center refinement seeded by the nominal
+lattice, eight nearest calibrated neighbors fixed a priori, per-site validation
+selection of boundary width/regularization/threshold, and validation-fitted
+positive-temperature probability calibration.
 
 ```bash
-python train_main.py \
-  --model_arch detr_query \
-  --pretrained_ckpt Pre_train/Run_pretrain/best.pth \
-  --load_mode backbone \
-  --site_dia_label_dir /path/to/intersection_train_data/site_dia_labels \
-  --sample_sizes 50000 \
-  --epochs 100 \
-  --batch_size 48 \
-  --output_dir outputs/detr_query_main
-
-python train_main.py \
-  --model_arch set_transformer \
-  --pretrained_ckpt Pre_train/Run_pretrain/best.pth \
-  --load_mode backbone \
-  --site_dia_label_dir /path/to/intersection_train_data/site_dia_labels \
-  --sample_sizes 50000 \
-  --epochs 100 \
-  --batch_size 48 \
-  --output_dir outputs/set_transformer_main
+python -m Reproduce_baseline_code.run_baselines \
+  --npz data/site_ait.npz --seeds 1 2 3 --out outputs/matched_filter.json
 ```
 
-Both baselines train under a reduced loss (bright-state classification only): App. F describes them only with a classification head, so `--site_mask_weight`, coordinate, existence, and reconstruction terms are fixed at 0 for these two architectures regardless of other flags.
+The package also contains a Bayesian readout research reproduction retained
+from an earlier comparison. It is not a current Table-I row; do not report it as
+one.
 
-Selected hyperparameters (App. F): DETR-style Query uses `eta=1e-4, D=256, L=4, H=8`, a `13x13` generic cross-attention template; Set Transformer uses `eta=3e-4, D=256`, 2 ISAB blocks, `M=32` inducing points, point-bilinear sampling. The full search grids (`eta` in `{5e-5,1e-4,3e-4,1e-3}`, `D` in `{128,256,512}`, etc., App. F) are documented in the model files' docstrings but not re-implemented as an automated search, since that requires the real dataset and compute budget this repository does not have.
+The current IPM implementation is in
+`Reproduce_baseline_code/ipm/ipm_model.py`. It initializes each pixel set at a
+local peak of the training bright--dark contrast image, grows pixels using the
+frozen manuscript settings `xi=0.5`, `T_P=90`, and `T_K=4`, and freezes per-site
+thresholds from calibration data before test evaluation.
+
+### 8.2 DETR-style Query
+
+`DETRStyleQuery` (`nets/DETRQuery.py`) shares the DW-UNet initialization and
+nominal lattice with Site-AIT and trains with bright-state classification loss:
+
+```bash
+python train_main.py --model_arch detr_query \
+  --pretrained_ckpt Pretrain_weight/best.pth --load_mode backbone \
+  --site_dia_label_dir data/intersection_train_data/site_dia_labels \
+  --sample_sizes 50000 --epochs 100 --batch_size 48 --random_state 1 \
+  --output_dir outputs/detr_query_seed1
+```
+
+The exhaustive detection search spaces stated in the supplement are 216
+configurations for DETR-style Query and 216 for the D-FINE + MAL adaptation;
+the Site-AIT control grid contains 12 configurations. They are enumerated by
+`experiments/detection_protocol.py` and run resumably by
+`experiments/run_detection_protocol.py`. A dry run writes all 444 search
+records without launching training:
+
+```bash
+python -m experiments.run_detection_protocol
+```
+
+Execution requires the 50,000-frame development corpus, site-level labels, the
+released pretrained backbone, and an explicit adapter command for the official
+DEIM checkout. These searches are distinct from the 96-run dense protocol.
+
+### 8.3 Dense segmentation: executable 21+60+15 protocol
+
+`experiments/run_dense_protocol.py` implements the complete dependent search:
+
+1. 21 capacity/output-resolution runs at seed 1;
+2. 60 learning-rate/objective runs (12 for each Stage-1 winner);
+3. 15 frozen-winner retraining runs (five models x seeds 1, 2, and 3).
+
+Each candidate performs nested validation-only disk-radius and threshold
+selection through `experiments/dense_decoder.py`. Threshold is selected by
+Youden's index for every radius in `{2,3,4,5}` and the candidate is scored by
+its best validation per-ion accuracy. `Real1600-Aug400` is never passed to the
+search runner.
+
+Dry plan (writes exactly 96 JSONL records and launches no training):
+
+```bash
+python -m experiments.run_dense_protocol --output-root outputs/dense_protocol
+```
+
+Execution requires the fixed 50,000-frame development corpus (internally split
+40,000/10,000), an all-bright calibration mask, and an adapter command for the
+official SegMAN checkout:
+
+```bash
+python -m experiments.run_dense_protocol --execute \
+  --data-root data/intersection_train_data \
+  --calibration-mask data/GroundTruth.png \
+  --segman-command "python external/segman_adapter.py --output {output_dir} --seed {seed} --lr {lr} --objective {objective} --stride {output_stride} --pretrained {imagenet_pretrained}"
+```
+
+`train_main.py` exposes U-Net base channels, TransUNet-style base channels and
+ViT depth, SETR patch size/decoder (`pup`, `naive`, `mla`), Segmenter patch size
+and encoder depth, learning rate, training-only positive-class weighting, and
+validation-accuracy early stopping. It writes `candidate_result.json` for
+resumable winner selection.
+
+### 8.4 External DEIM and SegMAN boundaries
+
+The manuscript's DEIM label denotes a register-preserving D-FINE + MAL
+adaptation. Bright ions become PSF-derived boxes; mosaic and mixup are disabled;
+Dense O2O is absent; detections are assigned to their nearest calibrated sites
+after inference. It is not an unmodified DEIM run.
+
+SegMAN-T uses the official Tiny implementation with an ImageNet-1K-pretrained
+encoder. Frames are reflection-padded from `456x88` to `480x96`, outputs are
+cropped before mask-to-site decoding, and no connected-component filtering is
+used. The protocol runner intentionally requires an explicit external adapter
+instead of silently shipping a divergent reimplementation. Pin and record the
+upstream commit for every run:
+
+- DEIM: <https://github.com/ShihuaHuang95/DEIM>
+- SegMAN: <https://github.com/yunxiangfu2001/SegMAN>
 
 ## 9. Physical robustness evaluation (Sec. V.C, App. I, Table III / Fig. 3)
 
@@ -233,8 +317,8 @@ Selected hyperparameters (App. F): DETR-style Query uses `eta=1e-4, D=256, L=4, 
 python Robustness_eval.py \
   --model_arch site_dia \
   --model_path outputs/site_dia_main/sample_50000/best.pth \
-  --test_root /path/to/intersection_test_data \
-  --gt_all_bright_mask /path/to/GroundTruth.png \
+  --test_root data/intersection_test_data \
+  --gt_all_bright_mask data/GroundTruth.png \
   --result_dir outputs/robustness_eval \
   --seeds 1,2,3
 ```

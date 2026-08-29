@@ -6,8 +6,6 @@ import os
 
 import time
 
-from glob import glob
-
 from pathlib import Path
 
 
@@ -16,9 +14,6 @@ import cv2
 import numpy as np
 
 import torch
-
-import torch.nn.functional as F
-
 
 from nets.DWNetV2_unet import DWNetV2_unet
 
@@ -35,6 +30,8 @@ from nets.SETR import SETR
 from nets.SegFormer import SegFormer
 
 from nets.Segmenter import Segmenter
+
+from experiments.dense_decoder import disk_average_probabilities
 
 
 _PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -412,7 +409,18 @@ def load_checkpoint_state(model_path, device):
     return ckpt
 
 
-def load_model(model_path, device, model_arch="site_dia", allow_partial_load=False, num_ion_attn_layers=1):
+def load_model(
+    model_path,
+    device,
+    model_arch="site_dia",
+    allow_partial_load=False,
+    num_ion_attn_layers=1,
+    dense_base_channels=32,
+    dense_vit_depth=6,
+    dense_patch_size=16,
+    dense_setr_decoder="pup",
+    dense_segmenter_depth=12,
+):
 
     if model_arch == "site_dia":
 
@@ -444,15 +452,15 @@ def load_model(model_path, device, model_arch="site_dia", allow_partial_load=Fal
 
     elif model_arch == "standard_unet":
 
-        model = StandardUNet()
+        model = StandardUNet(base_channels=dense_base_channels)
 
     elif model_arch == "vit_unet":
 
-        model = ViTUNet()
+        model = ViTUNet(base_channels=dense_base_channels, vit_depth=dense_vit_depth)
 
     elif model_arch == "setr":
 
-        model = SETR()
+        model = SETR(patch_size=dense_patch_size, decoder=dense_setr_decoder)
 
     elif model_arch == "segformer":
 
@@ -460,7 +468,9 @@ def load_model(model_path, device, model_arch="site_dia", allow_partial_load=Fal
 
     elif model_arch == "segmenter":
 
-        model = Segmenter()
+        model = Segmenter(
+            patch_size=dense_patch_size, encoder_depth=dense_segmenter_depth
+        )
 
     else:
 
@@ -572,6 +582,16 @@ def evaluate(args):
         allow_partial_load=args.allow_partial_load,
 
         num_ion_attn_layers=args.num_ion_attn_layers,
+
+        dense_base_channels=args.dense_base_channels,
+
+        dense_vit_depth=args.dense_vit_depth,
+
+        dense_patch_size=args.dense_patch_size,
+
+        dense_setr_decoder=args.dense_setr_decoder,
+
+        dense_segmenter_depth=args.dense_segmenter_depth,
 
     )
 
@@ -706,11 +726,21 @@ def evaluate(args):
 
             if state_prob is None:
 
-                _ys = coords_int[:, 1].clip(0, mask_prob.shape[0] - 1)
+                if args.site_eval_radius > 0:
 
-                _xs = coords_int[:, 0].clip(0, mask_prob.shape[1] - 1)
+                    state_prob = disk_average_probabilities(
 
-                state_prob = mask_prob[_ys, _xs].astype(np.float32)
+                        mask_prob[None, ...], coords, args.site_eval_radius
+
+                    )[0].astype(np.float32)
+
+                else:
+
+                    _ys = coords_int[:, 1].clip(0, mask_prob.shape[0] - 1)
+
+                    _xs = coords_int[:, 0].clip(0, mask_prob.shape[1] - 1)
+
+                    state_prob = mask_prob[_ys, _xs].astype(np.float32)
 
                 state_pred = (state_prob >= args.state_threshold).astype(np.uint8)
 
@@ -798,9 +828,6 @@ def evaluate(args):
 
 
     mask_mean = {k: float(np.mean([m[k] for m in mask_metric_rows])) for k in mask_metric_rows[0] if k not in ("tp", "tn", "fp", "fn")}
-
-    mask_sum = {k: float(np.sum([m[k] for m in mask_metric_rows])) for k in ("tp", "tn", "fp", "fn")}
-
 
     count_abs_errors = np.asarray(count_abs_errors, dtype=np.float64)
 
@@ -1015,6 +1042,28 @@ def parse_args():
 
     parser.add_argument("--state_threshold", type=float, default=PRED_THRESHOLD)
 
+    parser.add_argument(
+
+        "--site_eval_radius", type=int, default=0,
+
+        help="Dense baselines: validation-frozen disk radius; 0 keeps legacy center-pixel sampling.",
+
+    )
+
+    parser.add_argument("--dense_base_channels", type=int, default=32)
+
+    parser.add_argument("--dense_vit_depth", type=int, default=6)
+
+    parser.add_argument("--dense_patch_size", type=int, default=16)
+
+    parser.add_argument(
+
+        "--dense_setr_decoder", choices=["pup", "naive", "mla"], default="pup"
+
+    )
+
+    parser.add_argument("--dense_segmenter_depth", type=int, default=12)
+
     parser.add_argument("--ece_bins", type=int, default=15)
 
     parser.add_argument("--num_ion_attn_layers", type=int, default=1)
@@ -1042,4 +1091,3 @@ def main():
 if __name__ == "__main__":
 
     main()
-

@@ -1,17 +1,26 @@
-﻿[build-system]
+[build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "300ions-cnndetect"
-version = "0.1.0"
-description = "Training and evaluation code for 300-ion fluorescence image readout models."
+name = "site-ait-readout"
+version = "0.2.0"
+description = "Training, evaluation, and baseline-search code for Site-AIT fluorescence readout."
 readme = "README.md"
 requires-python = ">=3.10"
 
 [tool.setuptools]
-py-modules = ["config", "dataset", "loss", "trainer", "train_main", "Testset_eval", "Ablation_eval", "convert_slice_data_to_png", "generate_mask_proposals", "train_retrained_ablation"]
-packages = ["nets", "Pre_train"]
+py-modules = [
+  "config", "dataset", "loss", "trainer", "train_main", "Testset_eval",
+  "Ablation_eval", "Robustness_eval", "convert_slice_data_to_png",
+  "generate_mask_proposals", "train_retrained_ablation",
+]
+
+[tool.setuptools.packages.find]
+include = ["nets*", "Pre_train*", "experiments*", "Reproduce_baseline_code*"]
+
+[tool.pytest.ini_options]
+testpaths = ["smoke_tests", "experiments/tests", "Reproduce_baseline_code/tests"]
 
 [tool.ruff]
 line-length = 100
