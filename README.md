@@ -18,13 +18,13 @@ objective constrains training without changing the inference graph.
 - Current-paper baselines: matched filter and IPM in
   `Reproduce_baseline_code/`; DETR-style Query, U-Net,
   TransUNet-style, SETR-style, and Segmenter in `nets/`; and the
-  validation-only dense-baseline search protocol in `experiments/`.
+  dense-baseline search protocol in `experiments/`.
 
 The benchmark additionally uses the authors' public D-FINE/DEIM and SegMAN
 implementations. They are not vendored here; the adaptation boundary and
 command interface are documented in `experiments/README.md`.
 
-## Installation and no-data verification
+## Installation and verification
 
 Use Python 3.10 or later and install the CUDA-compatible PyTorch build first:
 
@@ -34,9 +34,6 @@ pip install -r requirements.txt
 python smoke_tests/run_all.py
 python -m pytest experiments/tests Reproduce_baseline_code/tests -q
 ```
-
-These checks do not reproduce manuscript metrics without the experimental
-dataset and GPU training runs.
 
 ## Main model quick start
 
@@ -58,13 +55,13 @@ python Testset_eval.py --model_arch site_dia \
 
 ## Dense-baseline protocol
 
-Generate the complete 96-run plan without launching jobs:
+Complete 96-run Dense-baseline hyperparameters search protocol for fair competitions:
 
 ```bash
 python -m experiments.run_dense_protocol --output-root outputs/dense_protocol
 ```
 
-Execute it only after supplying the training corpus, calibrated all-bright
+Execute it after supplying the training corpus, calibrated all-bright
 mask, and a command template for the official SegMAN-T checkout:
 
 ```bash
@@ -86,14 +83,6 @@ python -m experiments.run_detection_protocol
 Its dry plan contains 216 DETR-style Query candidates, 216 D-FINE + MAL
 candidates, and the 12-candidate Site-AIT control grid. Execution requires an
 explicit adapter command for the official DEIM checkout.
-
-## Data boundary
-
-The raw sCMOS frames, calibrated nominal lattice, and site-level annotations
-are not distributed here. Their expected layout is in `REPRODUCIBILITY.md`;
-access is described in the manuscript. Released weights support inspection and
-evaluation, but numerical reproduction of training-dependent tables requires
-the data.
 
 ## License
 
