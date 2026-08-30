@@ -1,0 +1,60 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+
+# Logs and caches
+*.log
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Data, annotations, generated outputs, and local checkpoints
+data/
+external_data/
+outputs/
+This_Work/
+runs/
+wandb/
+mask_proposals/
+Pre_train/Run_pretrain*/
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.npy
+*.npz
+*.mat
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.tif
+*.tiff
+*.zip
+
+# Keep repository docs and source files trackable
+!README.md
+!REPRODUCIBILITY.md
+!requirements.txt
+
+# Versioned release weights (all other checkpoints remain ignored)
+!Pretrain_weight/
+!Pretrain_weight/best.pth
+!Site_AIT_weight/
+!Site_AIT_weight/**/
+!Site_AIT_weight/**/*.pth
